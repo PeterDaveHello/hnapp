@@ -1,32 +1,49 @@
 # -*- coding: utf-8 -*-
 
-import sqlalchemy
-from sqlalchemy import Column, Integer, Numeric, String, Text, Enum, DateTime, ForeignKey
-from sqlalchemy.dialects.postgresql import INTEGER
-# from sqlalchemy.dialects.postgresql import JSONElement
-from sqlalchemy.dialects.postgresql import TSVECTOR
-from sqlalchemy.orm import validates, relationship, backref
-import sqlalchemy.ext.declarative
-
 from datetime import datetime
+try:
+	from datetime import timezone
+	UTC = timezone.utc
+except ImportError:
+	UTC = None
 
-from hnapp import db
+import sqlalchemy
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.orm import relationship, validates
+from werkzeug.http import http_date
+
+from extensions import db
 from errors import AppError, ValidationError
 
 
-class Item(sqlalchemy.ext.declarative.declarative_base()):
+class Item(db.Model):
 	
 	__tablename__ = 'item'
 	
 	id = Column(Integer, primary_key=True)
-	kind = Column(Enum('story', 'comment'), nullable=False, default=None) # pollopt is ignored
-	subkind = Column(Enum('link', 'ask', 'show', 'poll', 'job', 'comment'), nullable=False, default=None)
+	def _enum(values, name):
+		try:
+			return Enum(*values, name=name, create_type=False)
+		except TypeError:
+			return Enum(*values, name=name)
+
+	kind = Column(
+		_enum(('story', 'comment'), name='kind'),
+		nullable=False,
+		default=None
+	)  # pollopt is ignored
+	subkind = Column(
+		_enum(('link', 'ask', 'show', 'poll', 'job', 'comment'), name='subkind'),
+		nullable=False,
+		default=None
+	)
 	
 	root_id = Column(Integer, ForeignKey('item.id'))
-	root = relationship('Item', backref='root_descendants', foreign_keys=[root_id], remote_side=id)
+	root = relationship('Item', backref='root_descendants', foreign_keys=[root_id], remote_side=[id])
 	
 	parent_id = Column(Integer, ForeignKey('item.id'))
-	parent = relationship('Item', backref='children', foreign_keys=[parent_id], remote_side=id)
+	parent = relationship('Item', backref='children', foreign_keys=[parent_id], remote_side=[id])
 	
 	title = Column(String, nullable=True, default=None)
 	body = Column(Text, nullable=True, default=None)
@@ -79,7 +96,7 @@ class Item(sqlalchemy.ext.declarative.declarative_base()):
 		Update comment counts as needed
 		"""
 		
-		item = Item(**data)
+		item = cls(**data)
 		db.session.add(item)
 		# Flush session to get item's relationships to work (%%% Why is this needed?)
 		# <<< TODO I've enabled autoflush (I did? where?). I don't need this anymore, right?
@@ -122,11 +139,11 @@ class Item(sqlalchemy.ext.declarative.declarative_base()):
 			self.date_entered_fp = data['date_entered_fp']
 		
 		# Update all other fields
-		for key, value in data.iteritems():
+		for key, value in data.items():
 			if key in self.__class__.__table__.columns:
 				if key not in ('id', 'date_entered_fp', 'date_left_fp'):
 					setattr(self, key, value)
-		
+
 		if self.kind == 'comment':
 			# Find and set root
 			if self.root_id is None:
@@ -151,18 +168,18 @@ class Item(sqlalchemy.ext.declarative.declarative_base()):
 		"""
 		
 		# See if this item already exists
-		item = db.session.query(Item).get(data['id'])
-		
+		item = db.session.get(Item, data['id'])
+
 		# If found, update this item
 		if item is not None:
 			item.update(data)
 		# Otherwise, create a new item
 		else:
-			item = Item.create(data)
-		
+			item = cls.create(data)
+
 		# Manually set date_update – this runs even if no new data was available
 		item.date_updated = datetime.utcnow()
-		
+
 		return item
 	
 	
@@ -227,7 +244,7 @@ class Item(sqlalchemy.ext.declarative.declarative_base()):
 			# Filter items if requested
 			filters_failed = False
 			if filters is not None:
-				for key, value in filters.iteritems():
+				for key, value in filters.items():
 					if getattr(child, key) != value:
 						filters_failed = True
 						break
@@ -270,53 +287,71 @@ class Item(sqlalchemy.ext.declarative.declarative_base()):
 		Return data representing this item in our RSS/Atom feeds
 		Data must be properly encoded for XML
 		"""
-		
-		comments_url = self.comments_url().encode('ascii', 'xmlcharrefreplace')
+
+		def _xml_text(text):
+			if text is None:
+				return None
+			if isinstance(text, bytes):
+				text = text.decode('utf-8', errors='ignore')
+			return text.encode('ascii', 'xmlcharrefreplace').decode('ascii')
+
+		comments_url = self.comments_url()
 		if self.kind == 'story':
-			title = u'%d – %s' % (self.score, self.title)
-			points_label = str(self.score) + (' point' if self.score % 10 == 1 else ' points')
-			comments_label = str(self.num_comments) + ' comment' + ('s' if self.num_comments != 1 else '')
-			description = ('<p>%s, <a href="%s">%s</a></p>' % (points_label, comments_url, comments_label))
+			score = self.score
+			score_for_label = 0 if score is None else score
+			title = u'%d – %s' % (score_for_label, self.title or '')
+			points_label = str(score_for_label) + (' point' if score_for_label == 1 else ' points')
+			comment_count = self.num_comments
+			comment_count = 0 if comment_count is None else comment_count
+			comments_label = str(comment_count) + ' comment' + ('s' if comment_count != 1 else '')
+			description = '<p>{0}, <a href="{1}">{2}</a></p>'.format(points_label, comments_url, comments_label)
 		else: # comment
-			title = u'%s comments on "%s"' % (self.author, self.root.title if self.root else '(unknown story)')
-			description = u'%s <hr /><p><a href="%s">link</a>' % (self.body, self.comments_url())
-		return {'title': title.encode('ascii', 'xmlcharrefreplace'),
-				'title_type': 'html',
-				'content': description.encode('ascii', 'xmlcharrefreplace'),
-				'content_type': 'html',
-				'author': self.author,
-				'url': self.main_url(),
-				'id': self.comments_url(),
-				'updated': self.date_posted, # RSS readers look at this date
-				'published': self.date_posted
-				}
+			author = self.author or '(unknown author)'
+			root_title = self.root.title if self.root and self.root.title else '(unknown story)'
+			title = u'%s comments on "%s"' % (author, root_title)
+			body_html = self.body or ''
+			description = u'%s <hr /><p><a href="%s">link</a>' % (body_html, comments_url)
+		return {
+			'title': _xml_text(title),
+			'title_type': 'html',
+			'content': _xml_text(description),
+			'content_type': 'html',
+			'author': self.author,
+			'url': self.main_url(),
+			'id': self.comments_url(),
+			'updated': self.date_posted,
+			'published': self.date_posted
+		}
 	
 	def json_entry(self):
 		"""
 		Return data representing this item in our JSON feeds
 		"""
-		return {'id': self.id,
-				'type': self.kind,
-				'subtype': self.subkind,
-				'author': self.author,
-				'title': self.title,
-				'body': self.body,
-				'score': self.score,
-				'num_comments': self.num_comments,
-				'domain': self.domain,
-				'url': self.main_url(),
-				'comments_url': self.comments_url(),
-				'date_posted': self.date_posted,
-				'date_updated': self.date_updated,
-				}
+		def _format(dt):
+			if dt is None:
+				return None
+			if UTC is not None:
+				if dt.tzinfo is None:
+					dt = dt.replace(tzinfo=UTC)
+				else:
+					dt = dt.astimezone(UTC)
+			return http_date(dt)
+
+		return {
+			'id': self.id,
+			'type': self.kind,
+			'subtype': self.subkind,
+			'author': self.author,
+			'title': self.title,
+			'body': self.body,
+			'score': self.score,
+			'num_comments': self.num_comments,
+			'domain': self.domain,
+			'url': self.main_url(),
+			'comments_url': self.comments_url(),
+			'date_posted': _format(self.date_posted),
+			'date_updated': _format(self.date_updated),
+		}
 		
 		
 	
-
-
-
-
-
-
-
-

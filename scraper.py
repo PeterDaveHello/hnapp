@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 
-import requests
 import json
 import traceback
-
-from firebase import firebase
-from urlparse import urlparse, urljoin
 from datetime import datetime
-import sqlalchemy
+
 import bleach
+import requests
+import sqlalchemy
+from urllib.parse import urljoin, urlparse
 
 from hnapp import app, db
 from models.item import Item
@@ -21,19 +20,24 @@ from errors import AppError, ScraperError
 
 
 class Scraper(object):
-	
-	firebase = None
-	base_url = 'https://hacker-news.firebaseio.com/v0/'
+
+	session = None
+	base_url = 'https://hacker-news.firebaseio.com/v0'
+	request_timeout = 10
 	
 	
 	def connect(self):
-		"""
-		Connect to firebase API
-		You must call this before using the API
-		<<< TODO: call this from constructor
-		"""
-		if not self.firebase:
-			self.firebase = firebase.FirebaseApplication(self.base_url, None)
+		"""Ensure HTTP session is initialized for HN Firebase REST API."""
+		if self.session is None:
+			self.session = requests.Session()
+
+	def _request_json(self, path):
+		"""Helper to GET JSON from the Hacker News Firebase API."""
+		self.connect()
+		url = f"{self.base_url}/{path}.json"
+		response = self.session.get(url, timeout=self.request_timeout)
+		response.raise_for_status()
+		return response.json()
 	
 	
 	
@@ -68,17 +72,18 @@ class Scraper(object):
 		"""
 		
 		# Generate list of newest stories
-		stories = (db.session.query(Item)
-							 .with_entities(Item.id)
-							 .filter(Item.kind == 'story')
-							 .filter(Item.deleted == 0, Item.dead == 0)
-							 .order_by(sqlalchemy.desc(Item.id))
-							 .slice(start_from, count+start_from)
-							 .all()
-							 )
-		
+		statement = (
+			sqlalchemy.select(Item.id)
+			.where(Item.kind == 'story')
+			.where(Item.deleted == 0, Item.dead == 0)
+			.order_by(sqlalchemy.desc(Item.id))
+			.offset(start_from)
+			.limit(count)
+		)
+		story_ids = db.session.execute(statement).scalars().all()
+
 		save = lambda item_data: self.save_item(item_data)
-		self.fetch_items([item.id for item in stories], callback=save, min_delay=min_delay)
+		self.fetch_items(story_ids, callback=save, min_delay=min_delay)
 		
 	
 	
@@ -146,9 +151,8 @@ class Scraper(object):
 			'<p>' + html.replace('<p>', '</p>\n\n<p>') + '</p>',
 			tags=('a', 'i', 'p', 'pre'),
 			attributes={'a': ['href']},
-			styles=(),
 			strip=True
-			).replace('<p></p>', '')
+		).replace('<p></p>', '')
 	
 	
 	
@@ -173,7 +177,7 @@ class Scraper(object):
 		item_data = {}
 		
 		# Set standard fields listed above
-		for raw_field, model_field in fields.iteritems():
+		for raw_field, model_field in fields.items():
 			if raw_field in raw_item:
 				item_data[model_field] = raw_item[raw_field]
 		
@@ -249,7 +253,7 @@ class Scraper(object):
 		Fetch max item id available via HN Firebase API
 		"""
 		debug_print(">> fetch_max_item_id")
-		max_id = self.firebase.get('maxitem', None)
+		max_id = self._request_json('maxitem')
 		debug_print(max_id, '\n')
 		
 		return max_id
@@ -260,27 +264,33 @@ class Scraper(object):
 	def fetch_item(self, item_id):
 		"""
 		Fetch item data by id
-		Might return an instance of LostItem in case of API or HTTP error
+		Might return an instance of LostItem in case of null payload
+		or non-transient HTTP error
 		"""
 		debug_print(">> fetch_item %d" % item_id)
 		
 		try:
-			item = self.firebase.get('item', item_id)
+			item = self._request_json(f'item/{item_id}')
 			if item is None:
-				item = LostItem(id=item_id,
-								reason='null'
-								)
+				return LostItem(id=item_id, reason='null')
 			return item
 		except requests.exceptions.HTTPError as e:
-			# If API error encountered, return a LostItem instead
-			lost_item = db.session.query(LostItem).get(item_id)
+			status_code = e.response.status_code if e.response is not None else None
+			if status_code is None or status_code == 429 or status_code >= 500:
+				# Temporary upstream failures must be retried, not persisted as lost.
+				raise
+			lost_item = db.session.get(LostItem, item_id)
 			if lost_item is None:
-				lost_item = LostItem(id=item_id,
-									 reason='HTTP/%s' % e.response.status_code,
-									 response=e.response.text,
-									 traceback=traceback.format_exc()
-									 )
+				lost_item = LostItem(
+					id=item_id,
+					reason='HTTP/%s' % status_code,
+					response=e.response.text if e.response is not None else '',
+					traceback=traceback.format_exc()
+				)
 			return lost_item
+		except requests.exceptions.RequestException:
+			# Transient network failures should fail fast and be retried later.
+			raise
 	
 	
 	
@@ -298,7 +308,7 @@ class Scraper(object):
 		for item_id in item_ids:
 			# Skip items that have been recently updated, if requested
 			if min_delay > 0:
-				db_item = db.session.query(Item).get(item_id)
+				db_item = db.session.get(Item, item_id)
 				if db_item is not None and min_delay > (datetime.utcnow() - db_item.date_updated).total_seconds():
 					debug_print("Skipped item %d because it's too fresh" % item_id)
 					continue
@@ -318,8 +328,7 @@ class Scraper(object):
 		Ordered by current front page rank
 		"""
 		debug_print(">> fetch_top_story_ids")
-		
-		return self.firebase.get('topstories', None)
+		return self._request_json('topstories')
 	
 	
 	
@@ -327,11 +336,3 @@ class Scraper(object):
 	
 	
 	
-
-
-
-
-
-
-
-

@@ -18,7 +18,7 @@ What's in the box
 Dependencies
 ------------
 
-- ```python``` 2.7/2.8, ```python-dev```, ```virtualenv```, ```setuptools```
+- ```python3``` 3.9+, ```python3-dev```, ```virtualenv```, ```setuptools```
 - ```postgresql```, ```postgresql-common```, ```libpq-dev```
 - ```nodejs```, ```npm```, ```bower```
 - Also see ```requirements.txt``` for pip
@@ -72,8 +72,8 @@ pip install -r requirements.txt
 cp config.sample.py config.py
 nano config.py
 ```
-- Set up a cron job to run ```vpython /srv/www/hnapp/cron.py every_1_min``` every minute (replace ```vpython``` with the path to the python binary in your virtual environment). You should redirect all output to a log file to log errors.
-- Connect hnapp to a web server. The directory ```static``` must be webroot. hnapp was tested with ```nginx``` and ```uwsgi```. The uwsgi application is ```app``` in ```run.py```. For development purposes, you can use Flask's built-in web server by running ```vpython run.py```
+- Set up a cron job to run ```python cron.py every_1_min``` every minute. If you prefer Flask CLI, use ```flask --app hnapp cron every-1-min```. Activate your virtualenv before running and redirect output to a log file to capture errors.
+- Connect hnapp to a web server. The directory ```static``` must be webroot. hnapp was tested with ```nginx``` and ```uwsgi```. The uwsgi application is ```app``` in ```run.py```. For development purposes, you can run ```python run.py``` or ```flask --app hnapp run``` to start the built-in server.
 
 
 License

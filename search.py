@@ -12,7 +12,7 @@ import sqlalchemy
 from sqlalchemy import func
 # import bleach
 
-from hnapp import app, db
+from extensions import db
 from models.item import Item
 # from models.status import Status
 from errors import AppError, QueryError
@@ -28,7 +28,7 @@ class Search(object):
 		
 		negate = (word[0] == '-')
 		word = word[1:] if negate else word
-		for prefix, params in SearchToken.types.iteritems():
+		for prefix, params in SearchToken.types.items():
 			if word.lower().startswith(prefix):
 				if params.get('type', None) == 'join':
 					if prefix == word and not negate: # negating joins is not valid
@@ -159,19 +159,21 @@ class Search(object):
 	def query(cls, text_query, page_num=1, offset=0, count=30):
 		"""..."""
 		
-		token_tree = cls.token_tree(text_query.split())
+		words = text_query.split()
+		token_tree = cls.token_tree(words) if words else None
 		
-		query = (db.session.query(Item)
-						   # .filter(Item.kind == 'story')
-						   .filter(Item.dead == 0)
-						   .filter(Item.deleted == 0)
-						   )
+		statement = (sqlalchemy.select(Item)
+					.where(Item.dead == 0, Item.deleted == 0)
+					.order_by(sqlalchemy.desc(Item.id))
+					.offset(offset)
+					.limit(count)
+					)
 		if token_tree is not None:
-			query = query.filter(token_tree.filter())
+			expression = token_tree.filter()
+			if expression is not None:
+				statement = statement.where(expression)
 		
-		query = query.order_by(sqlalchemy.desc(Item.id)).slice(offset, offset+count)
-		
-		return query
+		return list(db.session.scalars(statement))
 	
 	
 	
@@ -213,8 +215,9 @@ class SearchToken(object):
 		# print 'filter for token:', self, self.prefix
 		
 		if self.prefix == 'word:':
-			tsquery = db.session.execute(sqlalchemy.sql.select([func.plainto_tsquery('english', self.value)])).fetchone()[0]
-			if tsquery != '':
+			tsquery_stmt = sqlalchemy.select(func.plainto_tsquery('english', self.value))
+			tsquery = db.session.execute(tsquery_stmt).scalar_one_or_none()
+			if tsquery:
 				where_story = sqlalchemy.and_(Item.kind == 'story', Item.title_tsv.match(tsquery))
 				where_comment = sqlalchemy.and_(Item.kind == 'comment', Item.body_tsv.match(tsquery))
 				where = sqlalchemy.or_(where_story, where_comment)
@@ -331,14 +334,15 @@ class SearchJoin(SearchToken):
 			}
 		
 		for token in self.tokens:
-			filters.append(token.filter())
+			expression = token.filter()
+			if expression is not None:
+				filters.append(expression)
 		
+		if not filters:
+			raise QueryError('Operator %s has no valid operands' % self.prefix)
 		return operators[self.prefix](*filters)
 	
 	
 	
 	def __repr__(self):
 		return u'<%s(%s, %s)>' % (self.__class__.__name__, self.prefix, self.tokens)
-
-
-

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import urllib
+from urllib.parse import quote_plus
 
 
 # -----------------------------
@@ -24,11 +24,10 @@ GA_ID = None
 
 
 # Number of items per page to show in GUI and RSS / JSON feeds
-ITEMS_PER_PAGE = 30;
+ITEMS_PER_PAGE = 30
 
 
 # Database connection string in the format engine://db_user:db_password@db_server/db_name
 # Documentation: http://docs.sqlalchemy.org/en/rel_0_9/core/engines.html
-SQLALCHEMY_DATABASE_URI = 'engine://db_user:%s@db_server/db_name' % urllib.quote_plus('password')
-
+SQLALCHEMY_DATABASE_URI = 'engine://db_user:%s@db_server/db_name' % quote_plus('password')
 

@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 
-import sqlalchemy
-from sqlalchemy import Column, Integer, Numeric, String, Text, Enum, DateTime, ForeignKey
-import sqlalchemy.ext.declarative
-
 from datetime import datetime, timedelta
 
-from hnapp import db
+from sqlalchemy import Column, DateTime, String
+
+from extensions import db
 from errors import AppError
 
-class Lock(sqlalchemy.ext.declarative.declarative_base()):
+
+class Lock(db.Model):
 	
 	__tablename__ = 'lock'
 	
@@ -19,7 +18,7 @@ class Lock(sqlalchemy.ext.declarative.declarative_base()):
 	
 	@classmethod
 	def exists(cls, name):
-		lock = db.session.query(Lock).get(name)
+		lock = db.session.get(Lock, name)
 		return lock and (lock.expires_at is None or lock.expires_at > datetime.utcnow())
 	
 	
@@ -38,17 +37,17 @@ class Lock(sqlalchemy.ext.declarative.declarative_base()):
 		if len(db.session.dirty) > 0 or len(db.session.deleted) > 0:
 			raise AppError('Lock.create – Session is dirty!')
 		
-		lock = db.session.query(Lock).get(name)
+		lock = db.session.get(Lock, name)
 		if not lock:
 			lock = Lock()
 			lock.name = name
 			db.session.add(lock)
-			
+
 		if expires_in is not None:
 			lock.expires_at = datetime.utcnow() + timedelta(0, expires_in)
-		
+
 		db.session.commit()
-		
+
 		return lock
 	
 	
@@ -65,7 +64,7 @@ class Lock(sqlalchemy.ext.declarative.declarative_base()):
 		if len(db.session.dirty) > 0 or len(db.session.deleted) > 0:
 			raise AppError('Lock.extend – Session is dirty!')
 		
-		lock = db.session.query(Lock).get(name)
+		lock = db.session.get(Lock, name)
 		if lock:
 			if expires_in is not None:
 				lock.expires_at = datetime.utcnow() + timedelta(0, expires_in)
@@ -81,7 +80,7 @@ class Lock(sqlalchemy.ext.declarative.declarative_base()):
 		if len(db.session.dirty) > 0 or len(db.session.deleted) > 0:
 			raise AppError('Lock.destroy – Session is dirty!')
 		
-		lock = db.session.query(Lock).get(name)
+		lock = db.session.get(Lock, name)
 		if lock:
 			db.session.delete(lock)
 			db.session.commit()

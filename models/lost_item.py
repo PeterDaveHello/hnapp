@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 
-import sqlalchemy
-from sqlalchemy import Column, Integer, Numeric, String, Text, Enum, DateTime, ForeignKey
-import sqlalchemy.ext.declarative
-
 from datetime import datetime
 
+from sqlalchemy import Column, DateTime, Integer, String, Text
 
-class LostItem(sqlalchemy.ext.declarative.declarative_base()):
+from extensions import db
+
+
+class LostItem(db.Model):
 	
 	__tablename__ = 'lost_item'
 	
@@ -17,5 +17,4 @@ class LostItem(sqlalchemy.ext.declarative.declarative_base()):
 	traceback = Column(Text, nullable=True, default=None)
 	date_found = Column(DateTime, default=datetime.utcnow)
 	
-
 
